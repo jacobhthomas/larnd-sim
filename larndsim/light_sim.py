@@ -3,6 +3,8 @@ Module that simulates smearing effects of the light incident on each
 photodetector
 """
 
+import os
+import warnings
 import numba as nb
 
 from numba import cuda
@@ -186,12 +188,62 @@ def _fft_convolve_time_axis(signal, kernel, output, scale=None):
     output += convolved
 
 
+def _scintillation_fft_mode():
+    """
+    EXPERIMENTAL: selects the scintillation convolution via the
+    LARNDSIM_LIGHT_CONV environment variable: 'fft' (default, float32 FFT) or
+    'fft64' (float64 FFT, cast back to float32, exactly zero at ticks outside
+    the physical support).
+    """
+    mode = os.environ.get('LARNDSIM_LIGHT_CONV', 'fft')
+    if mode not in ('fft', 'fft64'):
+        raise ValueError(f"Unknown LARNDSIM_LIGHT_CONV={mode!r}")
+    return mode
+
+
+def scintillation_support(signal, kernel):
+    """
+    Boolean mask of ticks that can receive light in the causal convolution of
+    the nonnegative `signal` with the retained, strictly positive scintillation
+    `kernel`: ticks `i` with some `signal[..., j] != 0` for
+    `i - kernel_length < j <= i`. This is the mathematical support; a float32
+    direct sum can still underflow to zero on a supported tick.
+    """
+    nticks = signal.shape[-1]
+    kernel_length = min(_convolution_kernel_length(kernel), nticks)
+    if not (np.asarray(kernel[:kernel_length]) > 0).all():
+        raise ValueError("scintillation_support requires a strictly positive retained kernel")
+    counts = cp.cumsum(signal != 0, axis=-1, dtype=cp.int64)
+    counts[..., kernel_length:] -= counts[..., :-kernel_length].copy()
+    return counts > 0
+
+
+def _fft64_scintillation(signal, kernel, output):
+    """
+    Scintillation convolution with a float64 FFT, cast back to `output.dtype`
+    and set to exactly zero at ticks outside the physical support (assumes
+    `output` is zero-initialized). Supported ticks that come out nonpositive
+    are reported, not corrected.
+    """
+    convolved = cp.zeros(signal.shape, dtype='f8')
+    _fft_convolve_time_axis(signal.astype('f8'), kernel, convolved)
+    output += convolved.astype(output.dtype)
+    support = scintillation_support(signal, kernel)
+    output[~support] = 0
+    n_nonpositive = int((support & (output <= 0)).sum())
+    if n_nonpositive:
+        warnings.warn(f"fft64 scintillation: {n_nonpositive} supported ticks are nonpositive (left uncorrected)")
+
+
 def calc_scintillation_effect(BPG, TPB, light_sample_inc, light_sample_inc_true_track_id, light_sample_inc_true_photons, light_sample_inc_scint, light_sample_inc_scint_true_track_id, light_sample_inc_scint_true_photons, scint_model):
     """
     Applies a smearing effect due to the liquid argon scintillation time profile
     with FFT-based convolution for the signal and a CUDA kernel for MC truth.
     """
-    _fft_convolve_time_axis(light_sample_inc, scint_model, light_sample_inc_scint)
+    if _scintillation_fft_mode() == 'fft64':
+        _fft64_scintillation(light_sample_inc, scint_model, light_sample_inc_scint)
+    else:
+        _fft_convolve_time_axis(light_sample_inc, scint_model, light_sample_inc_scint)
     _calc_scintillation_effect_truth[BPG, TPB](
         light_sample_inc,
         light_sample_inc_true_track_id,
