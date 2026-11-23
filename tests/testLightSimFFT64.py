@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """REQUIRES A CUDA CAPABLE GPU
 
-Tests for the float64 scintillation FFT (LARNDSIM_LIGHT_CONV=fft64).
+Tests for the float64 scintillation FFT (``light_convolution: fft64``, the default).
 
 The candidate computes the scintillation convolution with a float64 FFT, casts
 it back to float32, and sets every tick outside the physical support to exactly
@@ -378,21 +378,35 @@ def run_calc_scintillation_effect(signal, kernel):
 def test_mode_switch_and_unchanged_truth(monkeypatch, no_warnings):
     signal = load_fixture("extra_calls")
     kernel = scint_kernel(signal.shape[1])
-    monkeypatch.delenv("LARNDSIM_LIGHT_CONV", raising=False)
+    assert sim.LIGHT_CONVOLUTION == "fft64"   # default: 2x2_NuMI_sim.yaml does not set it
     default = run_calc_scintillation_effect(signal, kernel)
-    monkeypatch.setenv("LARNDSIM_LIGHT_CONV", "fft")
-    explicit_fft = run_calc_scintillation_effect(signal, kernel)
-    monkeypatch.setenv("LARNDSIM_LIGHT_CONV", "fft64")
+    monkeypatch.setattr(sim, "LIGHT_CONVOLUTION", "fft")
+    fft32 = run_calc_scintillation_effect(signal, kernel)
+    monkeypatch.setattr(sim, "LIGHT_CONVOLUTION", "fft64")
     fft64 = run_calc_scintillation_effect(signal, kernel)
 
-    assert np.array_equal(default[0], cp.asnumpy(run_fft32(signal, kernel)))   # default unchanged
-    assert np.array_equal(explicit_fft[0], default[0])
+    assert np.array_equal(default[0], fft64[0])
+    assert np.array_equal(fft32[0], cp.asnumpy(run_fft32(signal, kernel)))
     assert np.array_equal(fft64[0], cp.asnumpy(run_fft64(signal, kernel)))
-    assert np.array_equal(fft64[1], default[1]) and np.array_equal(fft64[2], default[2])  # truth unchanged
+    assert np.array_equal(fft64[1], fft32[1]) and np.array_equal(fft64[2], fft32[2])  # truth unchanged
 
-    monkeypatch.setenv("LARNDSIM_LIGHT_CONV", "fft_support")
+    monkeypatch.setattr(sim, "LIGHT_CONVOLUTION", "fft_support")
     with pytest.raises(ValueError):
         run_calc_scintillation_effect(signal, kernel)
+
+
+def test_light_convolution_setting(monkeypatch, tmp_path):
+    """light_convolution is read from the simulation properties and validated."""
+    monkeypatch.setattr(sim, "LIGHT_CONVOLUTION", sim.LIGHT_CONVOLUTION)   # restored after the test
+    good = tmp_path / "fft.yaml"
+    good.write_text("light_convolution: fft\n")
+    sim.set_simulation_properties(str(good))
+    assert sim.LIGHT_CONVOLUTION == "fft"
+
+    bad = tmp_path / "direct.yaml"
+    bad.write_text("light_convolution: direct\n")
+    with pytest.raises(RuntimeError):
+        sim.set_simulation_properties(str(bad))
 
 
 if __name__ == "__main__":

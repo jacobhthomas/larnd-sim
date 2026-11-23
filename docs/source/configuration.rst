@@ -71,6 +71,9 @@ Controls algorithmic parameters loaded into :mod:`larndsim.consts.sim`:
 - Batch sizes (``batch_size``, ``event_batch_size``, ``write_batch_size``)
 - Number of sampled points per segment
 - MC truth tracking settings (``MAX_MC_TRUTH_IDS``)
+- Light-simulation convolution method (``light_convolution``): ``fft64``
+  (default; float64 FFT that reproduces the direct sum) or ``fft`` (float32
+  FFT, faster but changes downstream random draws)
 
 Response File
 -------------
