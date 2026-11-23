@@ -3,7 +3,6 @@ Module that simulates smearing effects of the light incident on each
 photodetector
 """
 
-import os
 import warnings
 import numba as nb
 
@@ -190,14 +189,14 @@ def _fft_convolve_time_axis(signal, kernel, output, scale=None):
 
 def _scintillation_fft_mode():
     """
-    EXPERIMENTAL: selects the scintillation convolution via the
-    LARNDSIM_LIGHT_CONV environment variable: 'fft' (default, float32 FFT) or
-    'fft64' (float64 FFT, cast back to float32, exactly zero at ticks outside
-    the physical support).
+    Returns the scintillation convolution selected by ``light_convolution`` in
+    the simulation properties (:data:`larndsim.consts.sim.LIGHT_CONVOLUTION`):
+    'fft64' (default: float64 FFT, cast back to float32, exactly zero at ticks
+    outside the physical support) or 'fft' (float32 FFT).
     """
-    mode = os.environ.get('LARNDSIM_LIGHT_CONV', 'fft')
-    if mode not in ('fft', 'fft64'):
-        raise ValueError(f"Unknown LARNDSIM_LIGHT_CONV={mode!r}")
+    mode = sim.LIGHT_CONVOLUTION
+    if mode not in sim.LIGHT_CONVOLUTION_OPTIONS:
+        raise ValueError(f"Unknown light_convolution={mode!r}")
     return mode
 
 
