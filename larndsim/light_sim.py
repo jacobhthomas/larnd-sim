@@ -442,21 +442,42 @@ def calc_light_detector_response(BPG, TPB, light_sample_inc, light_sample_inc_tr
         light_response_true_track_id,
         light_response_true_photons,
         sipm_response,
+        _sipm_truth_lookback(sipm_response),
     )
 
 
+def _sipm_truth_lookback(sipm_response):
+    """
+    Number of earlier ticks the SiPM truth loop has to visit.
+
+    Contributions with a zero response weight never pass the MC truth threshold, so
+    the loop can stop where the response becomes zero for good. With the measured
+    2x2 impulse (2.56 us) and a 16 us light window this is about 2,550 ticks instead
+    of 16,000. The result is identical. With a threshold of zero or below, zero-weight
+    contributions would still claim truth slots, so the full window is kept.
+    """
+    conv_ticks = int(ceil((light.LIGHT_WINDOW[1] - light.LIGHT_WINDOW[0]) / light.LIGHT_TICK_SIZE))
+    if sim.MC_TRUTH_THRESHOLD <= 0:
+        return conv_ticks
+    nonzero = np.flatnonzero(np.asarray(sipm_response))
+    if nonzero.size == 0:
+        return 0
+    return min(conv_ticks, int(nonzero[-1]))
+
+
 @cuda.jit
-def _calc_light_detector_response_truth(light_sample_inc_true_track_id, light_sample_inc_true_photons, light_response_true_track_id, light_response_true_photons, sipm_response):
+def _calc_light_detector_response_truth(light_sample_inc_true_track_id, light_sample_inc_true_photons, light_response_true_track_id, light_response_true_photons, sipm_response, lookback):
     """
     Propagates MC truth through the SiPM response.
+
+    Args:
+        lookback(int): number of earlier ticks to visit (see `_sipm_truth_lookback`)
     """
     idet,itick = cuda.grid(2)
 
     if idet < light_sample_inc_true_track_id.shape[0]:
         if itick < light_sample_inc_true_track_id.shape[1]:
-            conv_ticks = ceil((light.LIGHT_WINDOW[1] - light.LIGHT_WINDOW[0])/light.LIGHT_TICK_SIZE)
-
-            for jtick in range(max(itick - conv_ticks, 0), itick+1):
+            for jtick in range(max(itick - lookback, 0), itick+1):
                 tick_weight = sipm_response[itick-jtick]
 
                 # loop over convolution tick truth

@@ -411,3 +411,49 @@ def test_light_convolution_setting(monkeypatch, tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# ------------------------------------------------- SiPM truth lookback ---
+
+def run_sipm_truth(ids, photons, response, lookback):
+    ids_d, photons_d = cp.asarray(ids), cp.asarray(photons)
+    out_ids = cp.full_like(ids_d, -1)
+    out_photons = cp.zeros_like(photons_d)
+    light_sim._calc_light_detector_response_truth[grid(ids_d), TPB](
+        ids_d, photons_d, out_ids, out_photons, response, lookback)
+    cuda.synchronize()
+    return cp.asnumpy(out_ids), cp.asnumpy(out_photons)
+
+
+def test_sipm_truth_lookback_gives_identical_truth():
+    """Stopping the SiPM truth loop where the response becomes zero changes nothing."""
+    rng = np.random.default_rng(SEED)
+    ndet, nticks, nslots = 3, 4000, sim.MAX_MC_TRUTH_IDS
+    ids = np.full((ndet, nticks, nslots), -1, dtype='i8')
+    photons = np.zeros((ndet, nticks, nslots), dtype='f8')
+    for idet in range(ndet):
+        for itick in rng.choice(nticks, size=600, replace=False):
+            k = rng.integers(1, min(4, nslots) + 1)
+            ids[idet, itick, :k] = rng.choice(30, size=k, replace=False)
+            photons[idet, itick, :k] = rng.exponential(2.0, size=k)
+
+    response = np.zeros(nticks, dtype=np.float32)
+    response[:300] = np.sin(np.linspace(0.1, 3.0, 300)) * np.exp(-np.linspace(0, 4, 300))
+    lookback = light_sim._sipm_truth_lookback(response)
+    full = int(ceil((light.LIGHT_WINDOW[1] - light.LIGHT_WINDOW[0]) / light.LIGHT_TICK_SIZE))
+    assert lookback == 299 < full
+
+    short = run_sipm_truth(ids, photons, response, lookback)
+    whole = run_sipm_truth(ids, photons, response, full)
+    assert np.array_equal(short[0], whole[0])
+    assert np.array_equal(short[1], whole[1])
+
+
+def test_sipm_truth_lookback_real_response(monkeypatch):
+    response = np.zeros(int(ceil((light.LIGHT_WINDOW[1] - light.LIGHT_WINDOW[0]) / light.LIGHT_TICK_SIZE)) + 1, dtype=np.float32)
+    light_sim.sipm_response_array(response)
+    lookback = light_sim._sipm_truth_lookback(response)
+    assert 0 < lookback < response.size - 1          # measured 2x2 impulse is shorter than the window
+    assert response[lookback] != 0 and not response[lookback + 1:].any()
+    monkeypatch.setattr(sim, "MC_TRUTH_THRESHOLD", 0)
+    assert light_sim._sipm_truth_lookback(response) == response.size - 1   # no shortcut without a threshold
